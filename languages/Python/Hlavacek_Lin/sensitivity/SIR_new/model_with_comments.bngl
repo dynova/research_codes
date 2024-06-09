@@ -1,0 +1,122 @@
+begin model
+# 2023-2024 seasonal flu data resources:
+#  - https://github.com/cdcepi/FluSight-forecast-hub?tab=readme-ov-file
+#  - https://healthdata.gov/Hospital/COVID-19-Reported-Patient-Impact-and-Hospital-Capa/g62h-syeh/about_data
+# model (unscaled populations):
+#   dS_/dt = - beta_(t)*I_*S_
+#   dI_/dt = beta_(t)*I_*S_ - gamma*I_
+#   dR_/dt = gamma*I_
+#  where
+#   beta_(t) is a piecewise constant function with n switch times, which delimit n+1 periods
+#   S_(0) = S_0 (number of susceptible persons at the start of the current flu season)
+#   I_(0) = I_0 (number of infected persons at the start of the current flu season)
+#   R_(0) = 0 
+#  NB: R_ is the number of persons removed during the current flu season, which is initially 0.
+#  Note that S_0+I_0 is less than or equal to the total population. An unknown number of persons are immune at time t=0.
+# model (scaled populations):
+#  Change variables (to eliminate one parameter, S_0) as follows: S=S_/S_0, I=I_/S_0, R=R_/S_0
+#   dS/dt = -beta(t)*I*S
+#   dI/dt = beta(t)*I*S - gamma*I
+#   dR/dt = gamma*I
+#  where
+#   S(0)=1
+#   I(0)=I_0/S_0
+#   R(0)=0
+#   beta(t)=beta_(t)*S_0
+begin parameters
+# number of switch times
+# n = 4 
+###### best-fit parameters (>0 except as indicated) ######
+t0__FREE 2
+t1__FREE 4
+t2__FREE 87
+t3__FREE 92
+b0__FREE 4.6e-2
+b1__FREE 7.8e-3
+b2__FREE 7.8e-2
+b3__FREE 2.6e-4
+gamma__FREE 0.02
+I0__FREE 0.0023 # 0 < I0__FREE < 1
+mult__FREE 1700
+##########################################################
+# period durations
+#  - the number of durations that must be specified equals the number of switch times for beta(t)
+#  - start time of current flu season: 0
+#  - switch times: t0, t0+t1, t0+t1+t2, etc.
+# duration of the period before the first switch; t0 is the time at which disease transmission begins
+t0 = t0__FREE # d
+# duration of the period between the first and second switches
+t1 = t1__FREE # d
+# duration of the period between the second and third switches
+t2 = t2__FREE # d
+# duration of the period between the third and fourth switches
+t3 = t3__FREE # d
+# period-dependent population-scaled contact-rate parameter settings
+# beta(t) in this formulation of the model is scaled (multiplied by the initial number of susceptible persons)
+# the initial non-zero value of beta(t): beta(t)=b0 for t0<=t<t0+t1
+b0 = b0__FREE # /d
+# the next non-zero values of beta(t)
+b1 = b1__FREE # /d
+b2 = b2__FREE # /d
+b3 = b3__FREE # /d
+# removal parameter
+gamma = gamma__FREE # /d
+# ratio: 0 < (initial number of infected persons)/(initial number of susceptible persons) < 1
+I0 = I0__FREE # dimensionless
+# measurement-model multiplier
+#  - relates I to the daily number of new hospital admissions
+mult = mult__FREE # dimensionless
+end parameters
+begin molecule types
+S() # (number of susceptible persons)/(initial number of susceptible persons)
+I() # (number of infected persons)/(initial number of susceptible persons)
+R() # (number of persons removed during the current flu season)/(initial number of susceptible persons)
+counter()
+end molecule types
+begin seed species
+S() 1 
+I() I0 
+R() 0
+end seed species
+begin observables
+Molecules S S()
+Molecules I I()
+Molecules R R()
+Molecules t counter()
+end observables
+begin functions
+# time-dependent beta (5 periods)
+#  - period T1 (duration t0): [0, t0)                   beta(t \in T1): 0
+#  - period T2 (duration t1): [t0, t0+t1)               beta(t \in T2): b0
+#  - period T3 (duration t2): [t0+t1, t0+t1+t2)         beta(t \in T3): b1
+#  - period T4 (duration t3): [t0+t1+t2, t0+t1+t2+t3)   beta(t \in T4): b2
+#  - period T5: [t0+t1+t2+t3, \infty)                   beta(t \in T5): b3
+beta()=if(t>=t0 && t<t0+t1,b0,\
+       if(t>=t0+t1 && t<t0+t1+t2,b1,\
+       if(t>=t0+t1+t2 && t<t0+t1+t2+t3,b2,\
+       if(t>=t0+t1+t2+t3,b3,\
+       0))))
+# daily number of new hospital admissions for influenza
+#  The number of new hospitalizations at time t accumulated over the previous 1-d period
+#  is approximately proportional to gamma*I(t) (from a first-order Taylor series expansion
+#  of the cumulative number of hospitalizations). 
+H()=mult*I # NB: the column header for daily hospitalizations in the state_name.EXP file should be H.
+end functions
+begin reaction rules
+# timer
+0->counter() 1
+# infection
+S()+I()->I()+I() beta()
+# removal
+I()->R() gamma
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# The start time of the current flu season is taken to be time 0.
+# Thus, t=0 corresponds to 12 AM on the first date of the current flu season.
+# Set t_start to 0.
+# Set t_end (and n_steps) to equal the number of new daily hospitalization counts available.
+# Change state_name to match the filename of the appropriate EXP file containing daily hospitalization data.
+simulate({suffix=>"state_name",method=>"ode",t_start=>0,t_end=>201,n_steps=>201,print_functions=>1})
+end actions
